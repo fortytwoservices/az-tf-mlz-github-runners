@@ -22,9 +22,11 @@ resource "azapi_resource" "this" {
   parent_id = var.parent_id
   location  = var.location
   # Uniform orchestration with Manual upgrades: an instance is never reimaged underneath a running job. A
-  # change to the model, a new image or script included, reaches new instances, or existing ones on an
-  # explicit `az vmss reimage` or `az vmss update-instances`. That is also why registration is in the model,
-  # not a separate extension resource: one added afterwards would never reach the instances that exist.
+  # change to the model, a new image or registration included, reaches new instances, and existing ones only
+  # when reimaged (`az vmss reimage`, while no job runs on them). Not `az vmss update-instances`: it runs the
+  # registration again on an instance that already has a runner, which Fortytwo's script refuses ("Runner
+  # already exists"), so the extension fails. Registration is in the model, not a separate extension
+  # resource, for the same reason: one added afterwards would never reach the instances that exist.
   # `zones` and `plan` are left out when unset: a regional scale set and an image without a plan have none.
   body = merge(
     {

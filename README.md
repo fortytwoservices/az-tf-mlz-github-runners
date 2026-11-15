@@ -50,6 +50,14 @@ Give the App only the runner permission, in its own App, and let only trusted wo
 - Register `Microsoft.Compute/EncryptionAtHost` on the subscription, or set `encryption_at_host_enabled = false`.
 - Put the App's key in the secret. The vault must use Azure RBAC and be reachable from the subnet.
 
+## Changing the runners
+
+A change to the image, the labels, the runner group or the App reaches new instances, and existing ones only
+when they are reimaged: `az vmss reimage --name <name> --resource-group <group> --instance-ids <ids>`, while no
+job runs on them. Not `az vmss update-instances`: it runs the registration again on an instance that already
+has a runner, which Fortytwo's script refuses ("Runner already exists"), so the extension fails and the runner
+keeps its old registration. Raising `instances` adds instances on the current model.
+
 **Cost:** each instance is billed for its compute and, on the default image, for Fortytwo's hourly fee, from the
 moment it exists. `instances = 0` stops both.
 
@@ -382,7 +390,7 @@ The following outputs are exported:
 
 ### <a name="output_name"></a> [name](#output\_name)
 
-Description: Name of the scale set, for `az vmss reimage` and `az vmss update-instances`.
+Description: Name of the scale set, for `az vmss reimage`, which brings an instance to the current model.
 
 ### <a name="output_network_security_group_resource_id"></a> [network\_security\_group\_resource\_id](#output\_network\_security\_group\_resource\_id)
 

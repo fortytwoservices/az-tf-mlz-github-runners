@@ -24,8 +24,10 @@ resource "azapi_resource" "resource_group" {
   tags                   = local.tags
 }
 
-# The runners' subnet. In MLZ it is management's `snet-runners`, whose outbound traffic the hub's firewall
-# allows to GitHub.
+# The runners' subnet. In MLZ it is management's `snet-runners`, whose outbound traffic goes through the hub's
+# firewall, which allows GitHub. This disposable example has no firewall, so the subnet keeps Azure's default
+# outbound access, set explicitly: newer API versions make subnets private by default, and a runner that cannot
+# reach GitHub and the vault never registers.
 resource "azapi_resource" "virtual_network" {
   type      = "Microsoft.Network/virtualNetworks@2025-07-01"
   name      = "vnet-mlz-runners-example-${random_string.suffix.result}"
@@ -36,8 +38,11 @@ resource "azapi_resource" "virtual_network" {
       addressSpace = { addressPrefixes = ["10.90.0.0/24"] }
       subnets = [
         {
-          name       = "snet-runners"
-          properties = { addressPrefix = "10.90.0.0/26" }
+          name = "snet-runners"
+          properties = {
+            addressPrefix         = "10.90.0.0/26"
+            defaultOutboundAccess = true
+          }
         }
       ]
     }

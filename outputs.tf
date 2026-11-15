@@ -1,5 +1,5 @@
 output "name" {
-  description = "Name of the scale set, for `az vmss reimage` and `az vmss update-instances`."
+  description = "Name of the scale set, for `az vmss reimage`, which brings an instance to the current model."
   value       = azapi_resource.this.name
 }
 
