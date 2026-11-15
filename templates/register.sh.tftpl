@@ -1,0 +1,40 @@
+#!/bin/sh
+# Registers this instance as a GitHub runner. Rendered by Terraform and run
+# once per instance by the CustomScript extension, as root.
+#
+# The extension saves this script as script.sh. Fortytwo's registration
+# script has the same name, which is why it is downloaded here, under its own
+# name, and not through the extension's fileUris: with both, this one replaced
+# it, and the `bash script.sh` at the end ran this script again, and again,
+# until the instance ran out of processes.
+#
+# GitHub is reached as the pool's GitHub App. The helper installed below turns
+# the App's private key in Key Vault into a one-hour installation token, so
+# Terraform never holds the key.
+set -eu
+
+umask 077
+echo '${app_token_script}' | base64 -d > /usr/local/sbin/github-app-token
+chmod 0700 /usr/local/sbin/github-app-token
+token=$(/usr/local/sbin/github-app-token)
+
+upstream=$(mktemp)
+trap 'rm -f "$upstream"' EXIT
+
+# Fortytwo's script, pinned to a commit and refused unless its hash matches:
+# it runs as root with the token in its environment.
+curl -fsSL --retry 5 --retry-delay 5 "${script_uri}" -o "$upstream"
+if ! echo "${script_sha256}  $upstream" | sha256sum -c --status -; then
+  echo "register: ${script_uri} does not match its pinned hash; not running it" >&2
+  exit 1
+fi
+
+# The files it creates -- the runner directory, its service -- get the
+# system's usual permissions, not the 077 used for the token above.
+umask 022
+RUNNER_CFG_PAT="$token" bash "$upstream" -s "${scope}" -u "${user}" -l "${labels}"%{ if runner_group != null } -r "${runner_group}"%{ endif } -f
+
+# Fortytwo's monitor deregisters the runner with the token its script saved,
+# when Azure announces the instance's deletion. An installation token lasts an
+# hour, so cron replaces the saved one every 30 minutes.
+echo '*/30 * * * * root /usr/local/sbin/github-app-token --refresh 2>&1 | logger -t github-app-token' > /etc/cron.d/github-app-token

@@ -8,5 +8,10 @@ terraform {
       source  = "Azure/azapi"
       version = "~> 2.12"
     }
+    # The administrator password: ephemeral random_password, from 3.7.0, so it is never in state.
+    random = {
+      source  = "hashicorp/random"
+      version = "~> 3.7"
+    }
   }
 }
