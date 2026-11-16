@@ -56,6 +56,12 @@ job runs on them. Not `az vmss update-instances`: it runs the registration again
 has a runner, which Fortytwo's script refuses ("Runner already exists"), so the extension fails and the runner
 keeps its old registration. Raising `instances` adds instances on the current model.
 
+**Scaling out:** Fortytwo's script looks up the latest `actions/runner` release on GitHub's API without
+authentication, which GitHub allows 60 times an hour per public IP address. Behind one egress address (in MLZ
+the hub firewall's), with anything else there calling GitHub's API unauthenticated counted too, instances past
+that in an hour fail to register: their extension fails, and a reimage later registers them. Add instances in
+steps of a few dozen an hour at most.
+
 **Cost:** each instance is billed for its compute and, on the default image, for Fortytwo's hourly fee, from the
 moment it exists. `instances = 0` stops both.
 
