@@ -1,29 +1,29 @@
-output "client_id" {
-  description = "Client (application) ID of the user-assigned identity."
-  value       = azapi_resource.this.output.properties.clientId
-}
-
-output "federated_identity_credential_resource_ids" {
-  description = "Resource IDs of the federated identity credentials, by credential name."
-  value       = { for name, credential in module.federated_identity_credential : name => credential.resource_id }
-}
-
 output "name" {
-  description = "Name of the user-assigned identity."
+  description = "Name of the scale set, for `az vmss reimage`, which brings an instance to the current model."
   value       = azapi_resource.this.name
 }
 
+output "network_security_group_resource_id" {
+  description = "Resource ID of the network security group on the runners' network interfaces."
+  value       = azapi_resource.network_security_group.id
+}
+
 output "principal_id" {
-  description = "Object (principal) ID of the user-assigned identity's service principal."
-  value       = azapi_resource.this.output.properties.principalId
+  description = "Object (principal) ID of the runners' user-assigned identity. Jobs on the runners can use it too."
+  value       = module.user_assigned_identity.principal_id
 }
 
 output "resource_id" {
-  description = "Resource ID of the user-assigned identity."
+  description = "Resource ID of the scale set."
   value       = azapi_resource.this.id
 }
 
-output "tenant_id" {
-  description = "Tenant ID of the user-assigned identity."
-  value       = azapi_resource.this.output.properties.tenantId
+output "user_assigned_identity_client_id" {
+  description = "Client ID of the runners' user-assigned identity."
+  value       = module.user_assigned_identity.client_id
+}
+
+output "user_assigned_identity_resource_id" {
+  description = "Resource ID of the runners' user-assigned identity."
+  value       = module.user_assigned_identity.resource_id
 }

@@ -1,41 +1,74 @@
-# az-tf-mlz-template
+# az-tf-mlz-github-runners
 
-The template for Fortytwo's managed landing zone (MLZ) Terraform modules, `az-tf-mlz-<name>`: AzAPI
-only, shaped like the Azure Verified Modules (AVM) AzAPI modules, without telemetry.
+Self-hosted GitHub Actions runners on an Azure virtual machine scale set, in AzAPI: Fortytwo's managed landing
+zone (MLZ) module for runners that live in the customer's own network, so pipelines reach private endpoints
+(the Terraform state, Key Vaults) without public access.
 
-## Start a module from this template
+Each instance runs Fortytwo's GitHub runner image from Azure Marketplace and registers with GitHub when it
+boots, as a GitHub App whose private key it reads from Key Vault. Terraform never reads the key.
 
-1. Create the repository from the template and apply the repository settings:
+## What it creates
 
-   ```sh
-   gh repo create fortytwoservices/az-tf-mlz-<name> --internal --template fortytwoservices/az-tf-mlz-template --clone
-   cd az-tf-mlz-<name>
-   scripts/repo-settings.sh fortytwoservices/az-tf-mlz-<name>
-   ```
+- A **virtual machine scale set** (Uniform, Manual upgrades, no overprovisioning) of `instances` runners in the
+  subnet given, with managed boot diagnostics, encryption at host and a terminate notification, so a runner
+  leaves GitHub before Azure deletes its instance. Registration is in the scale set's model (the Custom
+  Script extension), so every instance registers on its first boot.
+- A **user-assigned identity** ([`az-tf-mlz-user-assigned-identity`](https://github.com/fortytwoservices/az-tf-mlz-user-assigned-identity)),
+  with **Key Vault Secrets User on the App key's secret only**: the runners read that one secret and nothing
+  else in the vault.
+- A **network security group** on the runners' network interfaces that refuses every inbound connection.
 
-   CI reads the internal `az-tf-mlz-*` modules with the reader App `gh-az-tf-modules-reader`: set its
-   private key as the secret `AZ_TF_MODULE_READER_PRIVATE_KEY` (the script prints the command when it is
-   missing). If other modules will call this one, an org owner also adds the repository to the App's
-   selected repositories (organization settings, GitHub Apps, `gh-az-tf-modules-reader`, Configure).
+The caller owns the subnet, the Key Vault and the secret (`app_key_secret_resource_id`); a person puts the
+App's key in it with `az keyvault secret set --file`.
 
-2. On a branch, replace the placeholder module (below) with the real one: root files, `modules/*`,
-   `examples/*` and the tests. Rewrite this `_header.md`; keep `_footer.md`. Delete `CHANGELOG.md` and
-   set `.release-please-manifest.json` to `{}`: both carry the template's own releases, and left in place
-   they make the module's first release something other than 0.1.0.
-3. Run `scripts/check.sh --fix`, then the Azure tests, and open a pull request whose title starts with
-   `feat:`. Merging it makes release-please open the release pull request for the first version.
+## Registration
 
-## The placeholder module
+`templates/register.sh.tftpl` runs once per instance, as root:
+1. It installs `templates/app-token.sh.tftpl` as `/usr/local/sbin/github-app-token`, which reads the App's key
+   from Key Vault with the instance's identity (into memory only), signs a JWT and prints a one-hour
+   installation token.
+2. It downloads Fortytwo's registration script from
+   `fortytwoservices/terraform-azurerm-selfhostedrunnervmss`, pinned to a commit, and runs it only if its
+   SHA-256 matches. That script installs the current `actions/runner` as a service and the monitor that
+   removes the runner from GitHub on Azure's terminate event.
+3. Cron refreshes the saved token every 30 minutes, for that monitor.
 
-A user-assigned identity with federated identity credentials. It is here to keep every pattern a
-module needs working and tested:
+The App needs **Organization > Self-hosted runners: write** for organization runners (`github.scope` an
+organization, with `github.runner_group`), or **Repository > Administration: write** for repository runners
+(`github.scope` `<owner>/<repo>`).
 
-- the primary resource `azapi_resource.this`, with `resource_types`, `ignore_body_changes`, `retry`,
-  `timeouts` and `tags`;
-- a child resource type as a submodule managing one instance (`modules/federated_identity_credential`),
-  called with `for_each` by the root, with its writes serialised on the parent (`locks`);
-- the lock and role assignment interfaces through
-  [`az-tf-mlz-interfaces`](https://github.com/fortytwoservices/az-tf-mlz-interfaces), with the
-  credentials passed as `lock_dependencies` so the lock is removed around their changes;
-- unit tests with mocked providers, integration tests in Azure, and an example that is applied,
-  planned again (no changes allowed) and destroyed.
+**What a job can reach:** the instance's identity can read the App's key, and the current token sits in the
+runner user's home. A job on these runners can use both, so the key can do whatever a job on them may do.
+Give the App only the runner permission, in its own App, and let only trusted workflows use the runner group.
+
+## Before the first instance
+
+- Accept the image's terms in the subscription, once: `az vm image terms accept --publisher amestofortytwoas1653635920536 --offer self_hosted_runner_github --plan ubuntu-latest-gen2`.
+  The module does not: one agreement serves every scale set in the subscription.
+- Register `Microsoft.Compute/EncryptionAtHost` on the subscription, or set `encryption_at_host_enabled = false`.
+- Put the App's key in the secret. The vault must use Azure RBAC and be reachable from the subnet.
+
+## Changing the runners
+
+A change to the image, the labels, the runner group or the App reaches new instances, and existing ones only
+when they are reimaged: `az vmss reimage --name <name> --resource-group <group> --instance-ids <ids>`, while no
+job runs on them. Not `az vmss update-instances`: it runs the registration again on an instance that already
+has a runner, which Fortytwo's script refuses ("Runner already exists"), so the extension fails and the runner
+keeps its old registration. Raising `instances` adds instances on the current model.
+
+**Scaling out:** Fortytwo's script looks up the latest `actions/runner` release on GitHub's API without
+authentication, which GitHub allows 60 times an hour per public IP address. Behind one egress address (in MLZ
+the hub firewall's), with anything else there calling GitHub's API unauthenticated counted too, instances past
+that in an hour fail to register: their extension fails, and a reimage later registers them. Add instances in
+steps of a few dozen an hour at most.
+
+**Cost:** each instance is billed for its compute and, on the default image, for Fortytwo's hourly fee, from the
+moment it exists. `instances = 0` stops both.
+
+## Tested
+
+Ported from an azurerm module Fortytwo deployed for a customer on 2026-11-13, where it runs; the
+two scripts are that module's, unchanged. Unit tests cover the bodies, the role's scope and the rendered
+scripts. **Not yet run in Azure:** this AzAPI version is first deployed with the first MLZ customer (decided
+2026-11-15), since a test of the Marketplace image bills Fortytwo. Until then, which body changes Azure
+refuses in place (`replace_triggers_external_values`) is unverified.

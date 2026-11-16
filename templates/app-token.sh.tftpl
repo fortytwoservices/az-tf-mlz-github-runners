@@ -1,0 +1,86 @@
+#!/bin/sh
+# Prints a one-hour installation token for the runner pool's GitHub App or, with --refresh, writes
+# it where Fortytwo's monitor reads it. Rendered by Terraform, installed by register.sh.tftpl as
+# /usr/local/sbin/github-app-token, and run as root: at boot to register the runner, then every 30
+# minutes by cron.
+#
+# The App's private key comes from Key Vault, fetched with the instance's managed identity on every
+# run. It is only ever held in /dev/shm, which is memory, and removed on exit. The percent sign in
+# curl's -w format is doubled because Terraform renders this file as a template.
+set -eu
+
+imds="http://169.254.169.254/metadata/identity/oauth2/token?api-version=2018-02-01&resource=https%3A%2F%2Fvault.azure.net&client_id=${client_id}"
+
+# A user-assigned identity can take a little while to become usable after boot. Five minutes, then
+# give up and leave the reason in the log.
+i=0
+until access=$(curl -sf -H Metadata:true "$imds" | jq -er .access_token); do
+  i=$((i + 1))
+  if [ "$i" -ge 30 ]; then
+    echo "github-app-token: no Key Vault token from the instance metadata service" >&2
+    exit 1
+  fi
+  sleep 10
+done
+
+umask 077
+body=$(mktemp -p /dev/shm)
+key=$(mktemp -p /dev/shm)
+trap 'rm -f "$body" "$key"' EXIT
+
+# Retried the same way. A failure logs Key Vault's status and error, never the value.
+i=0
+while :; do
+  code=$(curl -s -o "$body" -w '%%{http_code}' --max-time 20 \
+    -H "Authorization: Bearer $access" \
+    "${vault_uri}secrets/${secret_name}?api-version=7.4") || code=000
+  if [ "$code" = 200 ] && jq -er .value "$body" > "$key"; then
+    break
+  fi
+  echo "github-app-token: ${secret_name} from ${vault_uri} answered $code: $(jq -c '.error // empty' "$body" 2>/dev/null)" >&2
+  i=$((i + 1))
+  if [ "$i" -ge 30 ]; then
+    echo "github-app-token: giving up on ${secret_name} after $i attempts" >&2
+    exit 1
+  fi
+  sleep 10
+done
+rm -f "$body"
+
+# A JWT signed with the App's key, identifying the App by its Client ID. GitHub accepts at most ten
+# minutes; it is back-dated a minute in case this clock runs ahead of GitHub's.
+b64url() { openssl base64 -A | tr '+/' '-_' | tr -d '='; }
+now=$(date +%s)
+header=$(printf '{"alg":"RS256","typ":"JWT"}' | b64url)
+claims=$(printf '{"iat":%d,"exp":%d,"iss":"%s"}' "$((now - 60))" "$((now + 540))" "${app_client_id}" | b64url)
+signature=$(printf '%s.%s' "$header" "$claims" | openssl dgst -sha256 -binary -sign "$key" | b64url)
+jwt="$header.$claims.$signature"
+
+github() {
+  curl -fsS --retry 5 --retry-delay 5 --max-time 30 \
+    -H "Authorization: Bearer $jwt" \
+    -H "Accept: application/vnd.github+json" \
+    -H "X-GitHub-Api-Version: 2022-11-28" \
+    "$@"
+}
+
+# The App's installation on the repository, for repository runners, or on the organization.
+installation=$(github "https://api.github.com/${installation_path}" | jq -er .id) || {
+  echo "github-app-token: the App is not installed for ${scope}" >&2
+  exit 1
+}
+token=$(github -X POST "https://api.github.com/app/installations/$installation/access_tokens" | jq -er .token) || {
+  echo "github-app-token: GitHub refused an installation token for ${scope}" >&2
+  exit 1
+}
+
+if [ "$${1-}" = --refresh ]; then
+  # Fortytwo's script keeps the token it registered with in the runner user's home, and its
+  # monitor deregisters the runner with it when Azure announces the instance's deletion.
+  new=$(mktemp /home/${user}/.github.XXXXXX)
+  printf '%s\n' "$token" > "$new"
+  chown ${user}:${user} "$new"
+  mv "$new" /home/${user}/.github
+else
+  printf '%s\n' "$token"
+fi
